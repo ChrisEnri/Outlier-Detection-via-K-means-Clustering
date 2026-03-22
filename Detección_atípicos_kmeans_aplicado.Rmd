@@ -1,0 +1,375 @@
+---
+title: "Clusterización"
+author: "Christian Amaro INEGI"
+date: "2025-07-28"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+options(scipen = 999)
+
+ 
+
+```
+
+
+### Construcción del sistema 
+El primer bloque de este proyecto se dedica a la construcción de un ecosistema de herramientas robusto que permita la manipulación eficiente de datos, el modelado estadístico y la visualización avanzada. La piedra angular de este entorno es el meta-paquete tidyverse, que integra librerías esenciales como dplyr para la manipulación de estructuras de datos mediante una gramática clara y ggplot2 para la creación de gráficos estáticos de alta calidad. Dado que trabajamos con información externa proveniente de fuentes institucionales, se utiliza readxl para garantizar una ingesta de datos precisa desde formatos Excel, manteniendo la integridad de los tipos de variables originales.
+
+Para la ejecución del núcleo algorítmico, se han seleccionado librerías especializadas en el aprendizaje no supervisado. El paquete cluster proporciona las funcionalidades fundamentales para el análisis de agrupamientos, mientras que factoextra se vuelve indispensable para la fase de diagnóstico, ya que permite visualizar de forma intuitiva los resultados de la clusterización y determinar métricas críticas como el número óptimo de grupos. Por último, la inclusión de plotly responde a la necesidad de una exploración de datos tridimensional; al convertir gráficos estáticos en interfaces interactivas, permitimos que el analista inspeccione cada punto (u observación atípica) en un espacio 3D, facilitando la validación visual de la eficiencia del algoritmo K-means en la detección de anomalías.
+
+```{r message=FALSE, warning=FALSE}
+# Se cargan las librerías y el df con el que se va a trabajar
+
+library(dplyr)
+library(tidyverse)
+library(caTools)
+library(KMEANS.KNN)
+library(cluster)
+library(ggplot2)
+#library(esquisse)
+library(readxl)
+library(factoextra)
+library(plotly)
+```
+
+### Ingesta de Datos y Selección Estratégica de Variables
+La segunda etapa del flujo de trabajo se centra en la adquisición y el filtrado de la información necesaria para el análisis de detección de anomalías. Utilizando la función read_xlsx del paquete readxl, se realiza la extracción de los registros contenidos en el archivo de trabajo, específicamente de la hoja titulada "Registros". Este paso es crucial, ya que asegura que estamos operando con la versión más reciente del conjunto de datos, el cual contiene indicadores clave sobre las Unidades de Producción (UP). Al visualizar las primeras filas mediante la función head(), validamos la estructura del data frame y garantizamos que la lectura de tipos de datos (numéricos, caracteres o factores) se haya ejecutado correctamente, evitando errores de interpretación en las etapas de cálculo posteriores.
+
+Posteriormente, procedemos a una selección estratégica de variables utilizando el operador pipe (%>%) de dplyr. En esta fase, el objetivo es aislar los identificadores únicos y las métricas de interés para el modelo de clusterización, eliminando el ruido que podrían generar variables administrativas no relevantes para el cálculo de distancias. Se seleccionan los campos ID_CA2022_UP y ENT_UP con el fin de mantener la trazabilidad geográfica y administrativa de cada observación dentro del sistema. Por otro lado, las variables US111_02_NORM, US111_03_NORM y US112_01_NORM constituyen el núcleo del análisis multivariado. Estas tres dimensiones representan métricas normalizadas que permiten comparar distintas unidades de producción bajo una misma escala métrica. Esta estandarización es la que facilita que el algoritmo K-means identifique patrones de comportamiento grupal de forma equitativa y, por consecuencia, permite aislar con precisión aquellas observaciones que se alejan significativamente del comportamiento promedio del sector, marcándolas como posibles puntos atípicos.
+
+```{r warning=FALSE}
+#df <- tabla_ganaderia_gp
+
+df <- read_xlsx(path = "2025_REP_1_MON_US_EXTRAC_EXP.xlsx", sheet = "Registros")
+
+head(df)
+
+#Selección de variables normalizadas
+
+
+df_sup <- df %>% select(ID_CA2022_UP, ENT_UP, US111_02_NORM, US111_03_NORM, US112_01_NORM)
+```
+
+
+
+### Depuración de Registros y Estandarización de Escalas
+Tras la fase de selección y transformación inicial, el flujo de trabajo se dirige hacia la consolidación de un dataset numéricamente estable. El primer paso crítico en este bloque es la aplicación de la función na.exclude(), la cual realiza una limpieza exhaustiva de cualquier observación que presente valores nulos. En algoritmos de particionamiento como K-means, la presencia de un solo dato faltante en una fila invalidaría el cálculo de la distancia de esa observación respecto al centroide, por lo que garantizar un conjunto de datos completos es un requisito indispensable para la integridad del modelo. Al excluir estos registros, aseguramos que la estructura matricial resultante sea robusta y apta para los cálculos vectoriales posteriores.
+
+Posteriormente, se ejecuta el escalado de las variables US111_02_NORM, US111_03_NORM y US112_01_NORM mediante la función scale(). Dado que las variables originales pueden presentar unidades de medida o magnitudes muy dispares, el escalado transforma los datos para que tengan una media de cero y una desviación estándar de uno. Esta estandarización es vital: sin ella, las variables con rangos numéricos más amplios dominarían el cálculo de la distancia euclidiana, sesgando los clusters hacia esas dimensiones y ocultando la influencia de las variables con escalas menores. Al normalizar la varianza, permitimos que cada dimensión de la encuesta contribuya con el mismo peso relativo a la formación de los grupos, facilitando así una detección de atípicos que sea verdaderamente multivariada y equilibrada.
+```{r}
+
+
+
+
+
+
+df_sup <- na.exclude(df_sup)
+
+df_sup[,3:5] <- scale(df_sup[,3:5])
+
+
+
+
+```
+
+### Método del codo para número de clusters óptimo 
+Determinación del Número Óptimo de ClustersLa selección del número de grupos ($k$) es una de las decisiones más críticas en el aprendizaje no supervisado, ya que impacta directamente en la sensibilidad del modelo para detectar anomalías. Para garantizar una partición óptima de los datos, este proyecto implementa un enfoque de validación cruzada utilizando dos de las métricas más robustas en la literatura estadística: el Método del Codo (Within Sum of Square - WSS) y el Método de la Silueta (Silhouette), ejecutados a través de la librería factoextra.El primer diagnóstico se realiza mediante el método WSS, el cual mide la cohesión interna de los clusters calculando la suma total de los cuadrados dentro de cada grupo. Al observar la gráfica resultante, buscamos el punto de inflexión o "codo" donde la reducción de la variabilidad interna deja de ser significativa al añadir más grupos. Como se aprecia en los resultados, existe una disminución drástica de la inercia hasta llegar a los primeros niveles de $k$. Complementariamente, el método de la Silueta proporciona una validación de la calidad de la estructura encontrada, midiendo qué tan bien se ajusta cada objeto a su propio cluster en comparación con los demás. El valor máximo observado en la gráfica de silueta indica la configuración que maximiza la cohesión interna y la separación externa. La convergencia de ambos métodos hacia un valor de $k=2$ proporciona una base sólida para proceder con el algoritmo, asegurando que los clusters resultantes reflejen estructuras reales en los datos y no ruido aleatorio.
+
+```{r}
+
+
+
+fviz_nbclust(x = df_sup[,3:5], method = "silhouette", k.max = 10, FUNcluster = kmeans) 
+
+
+
+
+fviz_nbclust(x = df_sup[,3:5], method = "wss", k.max = 10, FUNcluster = kmeans) 
+
+
+```
+
+### Ejecución del Algoritmo K-means y Asignación de Pertenencia
+Una vez determinado que la estructura óptima para el conjunto de datos es de dos agrupaciones, se procede con la implementación formal del algoritmo K-means. En esta etapa, el motor de cálculo de R ejecuta un proceso iterativo que busca minimizar la varianza intra-cluster, es decir, la distancia al cuadrado entre cada observación y el centroide de su grupo asignado. Se define un parámetro de iter.max = 20 para garantizar que el algoritmo tenga suficiente margen para converger hacia una solución estable, evitando que el proceso se detenga prematuramente en un óptimo local subóptimo.
+
+Tras la convergencia del modelo, los resultados se integran directamente en nuestra estructura de datos original. Mediante una operación de mutación con dplyr, se añade la columna cluster, la cual etiqueta cada unidad de producción con el número de grupo al que pertenece según sus similitudes multivariadas en las variables escaladas. La validación final de este paso se realiza a través de una tabla de frecuencias (table), la cual nos permite observar la distribución de la muestra entre ambos clusters. Esta distribución es el primer indicador de la presencia de anomalías: comúnmente, uno de los grupos agrupará la gran mayoría de las observaciones "normales" o típicas, mientras que el otro podría concentrar aquellas unidades con comportamientos diferenciados, sentando las bases para el cálculo preciso de las distancias euclidianas y la posterior extracción de atípicos.
+
+```{r}
+# Se calculan las distancias euclideanas y se usa algoritmo de kmeans
+
+kmeans_clustered <- kmeans(x = df_sup[,3:5], centers = 2, iter.max = 20)
+
+
+## Se obtienen los centroides 
+df_sup <- df_sup %>% mutate(cluster = kmeans_clustered$cluster)
+
+table(df_sup$cluster)
+
+
+```
+
+### Cálculo de Distancias Euclidianas al Centroide
+Una vez que los grupos han sido definidos por el algoritmo, el siguiente paso crítico es cuantificar qué tan "típica" es cada observación dentro de su propio cluster. Para ello, el código calcula la distancia euclidiana de cada punto respecto al centroide de su grupo asignado. Matemáticamente, esta distancia se obtiene mediante la raíz cuadrada de la suma de las diferencias al cuadrado entre las coordenadas de la observación y las de su centro de gravedad.
+
+ 
+$$ d(p,q) = \sqrt{\sum_{i=1}^n{(p_i-q_i)}^2}  $$ 
+ 
+La implementación técnica utiliza operaciones vectorizadas para restar la matriz de datos de la matriz de centros, optimizando el rendimiento computacional. Para validar la estructura de estas desviaciones, se generan dos diagnósticos visuales: un histograma, que muestra la concentración de registros cerca del centro y la dispersión hacia la derecha, y un boxplot, que identifica gráficamente la existencia de valores extremos. Finalmente, esta métrica se integra al dataframe bajo la columna distancia, transformando un concepto geométrico en un indicador numérico accionable para la detección final de anomalías.
+
+```{r}
+distancias <- sqrt(rowSums((df_sup[,3:5] - kmeans_clustered$centers[kmeans_clustered$cluster, ])^2))
+
+
+
+hist(distancias, main="Distancia al centroide", xlab="Distancia Euclidiana")
+boxplot(distancias, horizontal = TRUE)
+
+
+
+
+distancias <- data.frame(sqrt(rowSums((df_sup[,3:5] - kmeans_clustered$centers[kmeans_clustered$cluster, ])^2)))
+
+colnames(distancias) <- "distancias" 
+
+
+df_sup$distancia <- distancias$distancias
+
+
+
+
+```
+
+### Identificación de Atípicos en el Cluster 1
+En esta fase, el objetivo es poner una regla clara para separar los atípicos dentro del primer grupo de datos. Para lograrlo, utilizamos un criterio basado en la desviación estándar, que es una medida de qué tan dispersos están los datos respecto a su centro.
+
+Primero, filtramos las observaciones que pertenecen al Cluster 1 y calculamos dos valores clave: la media (el promedio de las distancias al centroide) y la desviación estándar (el promedio de alejamiento de los datos). El código establece un límite de seguridad muy estricto de 4 desviaciones estándar por encima y por debajo de la media. En estadística, cualquier dato que se aleje más de 3 o 4 veces la desviación estándar se considera un "outlier" o valor atípico, ya que su comportamiento es extremadamente inusual comparado con el resto del grupo.
+
+Finalmente, mediante la función case_when, creamos una nueva columna llamada atipico. Si la distancia de una unidad de producción supera estos límites, se le asigna un 1 (Atípico); de lo contrario, se marca con un 0 (Normal). Este proceso nos permite generar una tabla de frecuencias para saber cuántos casos necesitan una revisión detallada y filtrar rápidamente sus identificadores para auditoría.
+
+
+```{r}
+
+df_sup_cl1 <- df_sup %>% filter(cluster == 1)
+
+## Medidas de dispersión 
+media <- mean(df_sup_cl1$distancia)
+desvest <- sd(df_sup_cl1$distancia)
+
+# Factor para cálculo de atípicos
+atip_arriba <- media + 4 * desvest
+atip_debajo <- media - 4 * desvest
+ atip_arriba
+ atip_debajo 
+ 
+ 
+ 
+ 
+ 
+# Se categorizan los valores. 1 outlier 0 no outlier 
+ df_sup_cl1$atipico <- case_when(
+   df_sup_cl1$distancia > atip_arriba ~ 1,
+   df_sup_cl1$distancia < atip_debajo ~ 1,
+   TRUE ~ 0
+ )
+ 
+# Tabla de frecuencias para atípicos 
+
+tabla <- data.frame(table(df_sup_cl1$atipico))
+
+knitr::kable(tabla)
+
+ atip <- view(df_sup_cl1 %>% filter(atipico == 1) )
+
+
+ 
+ 
+```
+
+
+
+### Visualización Tridimensional de Atípicos (Plotly)
+La etapa final para validar la eficiencia del algoritmo es la representación gráfica en un espacio de tres dimensiones. Para esto, utilizamos la librería plotly, que nos permite generar un gráfico de dispersión (scatter plot) interactivo. A diferencia de un gráfico estático, esta herramienta permite rotar los ejes, hacer zoom y explorar cada observación desde diferentes ángulos, algo fundamental cuando trabajamos con tres variables simultáneamente.
+
+En este gráfico, cada eje $(x,y,z)$ corresponde a una de las métricas normalizadas de la encuesta. La clave visual está en el uso de colores: hemos configurado los puntos en azul para representar los registros normales (valor 0) y en rojo para resaltar los valores atípicos (valor 1). Esta diferenciación inmediata permite confirmar visualmente que los puntos marcados como rojos son, efectivamente, aquellos que se encuentran en los extremos de la nube de datos o que siguen una tendencia distinta al resto de la población. Esta validación visual no solo demuestra la precisión del código, sino que también sirve como una herramienta de auditoría rápida para identificar qué unidades de producción requieren una revisión inmediata por su comportamiento inusual.
+
+
+```{r}
+
+
+plot_ly(
+  data = df_sup_cl1,
+  x = ~US111_02_NORM,
+  y = ~US111_03_NORM,
+  z = ~US112_01_NORM,
+  color = ~factor(atipico),
+  colors = c("blue", "red"),  # azul = no atípico, rojo = atípico
+  symbols = c("circle"),
+  marker = list(size = 5)
+) %>%
+  layout(
+    scene = list(
+      xaxis = list(title = "US111_02_NORM"),
+      yaxis = list(title = "US111_03_NORM"),
+      zaxis = list(title = "US112_01_NORM")
+    ),
+    legend = list(title = list(text = "Atípico"))
+  )
+
+
+
+```
+
+
+
+
+
+### Extracción de Registros Atípicos para Auditoría
+Una vez que el modelo ha etiquetado los puntos rojos en la visualización, el siguiente paso es identificar exactamente a qué unidades de producción pertenecen esos datos. Para ello, el código realiza una operación de "limpieza y rescate" de información. Primero, aislamos los identificadores únicos (ID_CA2022_UP) de todos los registros que fueron marcados como atípicos en el Cluster 1.
+
+Posteriormente, utilizamos una función de unión llamada left_join. Esta herramienta es fundamental porque nos permite cruzar nuestra lista de "sospechosos" con la base de datos original (df). Al hacer este cruce, recuperamos toda la información contextual de esas unidades, como su ubicación geográfica (ENT_UP) y sus valores originales, sin perder la trazabilidad. El resultado final es un listado depurado y específico que contiene únicamente las observaciones que se desviaron del comportamiento normal. Este reporte es el producto final más valioso para un analista, ya que permite pasar de un gráfico estadístico a una lista de casos reales que requieren una revisión profunda o una validación en campo.
+
+```{r}
+
+
+atipico_clus1 <- data.frame(atip$ID_CA2022_UP)
+
+colnames(atipico_clus1) <- "ID_CA2022_UP"
+
+
+
+atipico_clus1 <- left_join(x = atipico_clus1, y = df, by = "ID_CA2022_UP")
+
+atipico_clus1 <- atipico_clus1 %>%   select(ID_CA2022_UP, ENT_UP, US111_02_NORM, US111_03_NORM, US112_01_NORM)
+
+
+```
+
+### Consolidación del Cluster con Etiquetas de Anomalía
+Después de haber identificado cuáles registros son atípicos y cuáles no, el siguiente paso técnico es reunir toda la información en un solo lugar. Para esto, realizamos una operación de "limpieza y pegado" de datos muy precisa. Tomamos los identificadores únicos (ID_CA2022_UP) del Cluster 1 junto con su etiqueta de atipico y, mediante un left_join, les volvemos a traer sus valores originales de las tres variables clave de la encuesta.
+
+Este proceso es como volver a armar un rompecabezas: ahora tenemos un dataset que contiene tanto la posición original de las unidades de producción como la "marca" que les pusimos (0 para normales, 1 para atípicos). Al organizar las columnas finales con select, nos aseguramos de tener una estructura limpia y lista para ser graficada. Este paso es vital porque permite que, al momento de visualizar, podamos ver el grupo completo (el cluster 1) y distinguir claramente dentro de ese mismo grupo quiénes se comportaron de forma esperada y quiénes rompieron el patrón, permitiendo un análisis comparativo directo y profesional.
+
+```{r}
+
+
+df_cluster1_ <- df_sup_cl1 %>% select(ID_CA2022_UP, atipico) %>%  left_join(df %>%  select(ID_CA2022_UP, US111_02_NORM, US111_03_NORM, US112_01_NORM), by = "ID_CA2022_UP")
+
+df_cluster1_ <- df_cluster1_ %>%  select(ID_CA2022_UP, US111_02_NORM, US111_03_NORM, US112_01_NORM, atipico)
+
+```
+
+
+### Visualización Interactiva del Cluster 1: Casos Normales vs. Atípicos
+
+El paso final para este segmento del análisis es la generación de un mapa tridimensional interactivo que permita distinguir, dentro de un mismo grupo, la ubicación espacial de los registros detectados. Utilizando nuevamente la potencia de plotly, construimos un gráfico de dispersión 3D alimentado por nuestro dataset consolidado df_cluster1_.En este gráfico, la interactividad es la clave: el usuario puede rotar la nube de puntos para observar cómo las unidades de producción marcadas en azul (casos normales) forman un núcleo compacto de comportamiento estándar. Por el contrario, los puntos resaltados en rojo (casos atípicos) aparecen claramente desplazados hacia las periferias o extremos del eje $z$, $y$ o $x$. Esta representación no solo valida que el criterio de las 4 desviaciones estándar fue aplicado correctamente, sino que también proporciona una herramienta de diagnóstico visual inmediata. Al pasar el cursor sobre los puntos, es posible inspeccionar los valores específicos que llevaron a esa unidad a ser considerada una anomalía, cerrando así el ciclo entre el procesamiento estadístico y la interpretación de resultados para la toma de decisiones.
+
+```{r echo=TRUE}
+
+
+plot_ly(
+  data = df_cluster1_,
+  x = ~US111_02_NORM,
+  y = ~US111_03_NORM,
+  z = ~US112_01_NORM,
+  color = ~factor(atipico),
+  colors = c("blue", "red"),  # azul = no atípico, rojo = atípico
+  symbols = c("circle"),
+  marker = list(size = 5)
+) %>%
+  layout(
+    scene = list(
+      xaxis = list(title = "US111_02_NORM"),
+      yaxis = list(title = "US111_03_NORM"),
+      zaxis = list(title = "US112_01_NORM")
+    ),
+    legend = list(title = list(text = "Atípico"))
+  )
+
+
+
+```
+
+
+### Identificación de Atípicos en el Cluster 2 y Ajuste de Sensibilidad
+Tras haber procesado el primer grupo, el análisis se desplaza hacia el Cluster 2. Aunque el procedimiento matemático sigue la misma estructura —basada en medidas de dispersión—, en este bloque el código introduce un cambio estratégico: se utiliza un factor de 3 desviaciones estándar ($\mu \pm 3\sigma$) en lugar de 4. Este ajuste es fundamental, ya que cada grupo de datos puede presentar una variabilidad interna distinta; al reducir ligeramente el umbral, permitimos que el modelo sea un poco más sensible en este cluster específico, capturando anomalías que en un criterio más estricto podrían haber pasado desapercibidas.El proceso comienza filtrando las observaciones pertenecientes al segundo grupo y calculando su media y desviación estándar particulares. Mediante la función case_when, clasificamos nuevamente los registros: aquellos cuya distancia al centroide supere los límites calculados son marcados como atípicos (1). Para finalizar, generamos una tabla de frecuencias con knitr::kable que resume el conteo de estas detecciones, permitiendo una revisión rápida de la proporción de anomalías encontradas en esta parte de la muestra. Este enfoque diferenciado demuestra un manejo más flexible y profesional de la estadística, adaptando el rigor del algoritmo a la naturaleza real de los datos en cada segmento.
+
+```{r}
+
+df_sup_cl2 <- df_sup %>% filter(cluster == 2)
+
+## Medidas de dispersión 
+media <- mean(df_sup_cl2$distancia)
+desvest <- sd(df_sup_cl2$distancia)
+
+# Factor para cálculo de atípicos
+atip_arriba <- media + 3 * desvest
+atip_debajo <- media - 3 * desvest
+ atip_arriba
+ atip_debajo 
+ 
+ 
+ 
+ 
+ 
+# Se categorizan los valores. 1 outlier 0 no outlier 
+ df_sup_cl2$atipico <- case_when(
+   df_sup_cl2$distancia > atip_arriba ~ 1,
+   df_sup_cl2$distancia < atip_debajo ~ 1,
+   TRUE ~ 0
+ )
+ 
+# Tabla de frecuencias para atípicos 
+
+tabla <- data.frame(table(df_sup_cl2$atipico))
+
+knitr::kable(tabla)
+
+ atip2 <- view(df_sup_cl2 %>% filter(atipico == 1) )
+
+
+ 
+ 
+```
+
+### Visualización Interactiva y Validación del Cluster 2
+La culminación del análisis para el segundo segmento se realiza mediante una representación tridimensional interactiva utilizando plotly. Este gráfico es el espejo del proceso anterior, pero aplicado a las observaciones del Cluster 2, donde aplicamos un criterio de detección un poco más sensible. En este espacio 3D, los ejes representan las dimensiones normalizadas de la encuesta, permitiéndonos observar la estructura interna del grupo.
+
+La codificación visual por colores vuelve a ser protagonista: los puntos en azul representan el comportamiento estándar de este cluster, mientras que los puntos en red (rojos) resaltan las anomalías que se alejaron más de 3 desviaciones estándar del centroide. Esta visualización es clave para confirmar que, a pesar de tener una densidad y dispersión distintas a las del primer grupo, el algoritmo sigue siendo capaz de aislar con precisión los casos extremos. La posibilidad de rotar y explorar la nube de puntos le da al analista una confianza total en los resultados, permitiendo identificar de un vistazo si los atípicos se concentran en una sola variable o si son desviaciones multivariadas complejas.
+
+```{r}
+
+
+plot_ly(
+  data = df_sup_cl2,
+  x = ~US111_02_NORM,
+  y = ~US111_03_NORM,
+  z = ~US112_01_NORM,
+  color = ~factor(atipico),
+  colors = c("blue", "red"),  # azul = no atípico, rojo = atípico
+  symbols = c("circle"),
+  marker = list(size = 5)
+) %>%
+  layout(
+    scene = list(
+      xaxis = list(title = "US111_02_NORM"),
+      yaxis = list(title = "US111_03_NORM"),
+      zaxis = list(title = "US112_01_NORM")
+    ),
+    legend = list(title = list(text = "Atípico"))
+  )
+
+
+
+```
+
+### Conclusiones
+
+El Poder del Análisis Multivariado en la Detección de Anomalías
+A través de este ejercicio, hemos demostrado que la detección de valores atípicos trasciende los métodos univariados tradicionales. Al implementar un enfoque basado en Clustering (K-means) y distancias euclidianas, es posible identificar observaciones que, si bien podrían parecer normales en una sola variable, presentan comportamientos anómalos al analizar la interacción conjunta de múltiples dimensiones. Este proyecto subraya la importancia de aplicar herramientas estadísticas rigurosas, como la normalización logarítmica, el escalado de variables y la validación de grupos mediante el método del codo y la silueta, para garantizar que los hallazgos tengan un sustento matemático sólido.
+
+Un aspecto clave de este flujo de trabajo fue la capacidad de visualizar los resultados en un espacio tridimensional. Al trabajar con conjuntos de tres variables, la interactividad de herramientas como plotly nos permitió validar físicamente la eficiencia del algoritmo, observando cómo los puntos marcados como atípicos se separan de la densidad central de la muestra. Sin embargo, este ejercicio también nos abre la puerta a desafíos más complejos: en escenarios con una mayor dimensionalidad, donde el ojo humano no puede interpretar directamente los ejes, será necesario emplear técnicas de reducción de dimensiones (como PCA o t-SNE) y métricas de visualización aún más robustas para mantener el contexto y la interpretabilidad de los datos. En conclusión, este sistema proporciona una base escalable y profesional para cualquier proceso de auditoría de datos que busque precisión, trazabilidad y claridad visual.
