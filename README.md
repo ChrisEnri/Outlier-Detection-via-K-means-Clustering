@@ -20,7 +20,7 @@ Algorithms & Diagnostics: cluster, factoextra, KMEANS.KNN
 Visualization: plotly (Interactive 3D), ggplot2
 
 
-## ⚙️ Analytical Workflow1. 
+## ⚙️ Analytical Workflow. 
 
 ### 1. Data Ingestion & Feature Selection 
 
